@@ -1,21 +1,19 @@
-# syntax=docker/dockerfile:1.7
-# Build context: repository root  (js/openmedkit-web/ will not reach tests/)
+# Build context: this directory (js/openmedkit-web/)
 #
 # Stages
 #   deps     – install dev deps
-#   builder  – tsc compile → dist/
-#   test     – typecheck + node:test suite (needs tests/ from repo root)
-#   release  – minimal image with dist/ and package.json only
+#   builder  – compile TypeScript → dist/ and typecheck
+#   release  – minimal image with dist/, package.json, and src/
 #
-# Build (default release target):
-#   docker build -f js/openmedkit-web/Dockerfile -t openmedkit-web .
-#
-# Build and run tests:
-#   docker build -f js/openmedkit-web/Dockerfile --target test -t openmedkit-web:test .
+# Build (run from js/openmedkit-web/):
+#   docker build -t openmedkit-web .
 #
 # Extract dist/ without starting a container:
 #   id=$(docker create openmedkit-web)
-#   docker cp $id:/app/js/openmedkit-web/dist ./dist && docker rm $id
+#   docker cp $id:/app/dist ./dist && docker rm $id
+#
+# Note: the node test suite lives at the monorepo root (tests/web/) and is
+# excluded from Docker builds; run `npm test` on the host instead.
 
 ARG NODE_VERSION=20
 ARG ALPINE_VERSION=3.21
@@ -23,29 +21,19 @@ ARG ALPINE_VERSION=3.21
 # ── deps ──────────────────────────────────────────────────────────────────────
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS deps
 
-WORKDIR /app/js/openmedkit-web
+WORKDIR /app
 
-COPY js/openmedkit-web/package.json ./
+COPY package.json ./
 
 RUN npm install --ignore-scripts
 
 # ── builder ───────────────────────────────────────────────────────────────────
 FROM deps AS builder
 
-COPY js/openmedkit-web/tsconfig.json ./
-COPY js/openmedkit-web/src ./src
+COPY tsconfig.json ./
+COPY src ./src
 
-RUN npm run build
-
-# ── test ──────────────────────────────────────────────────────────────────────
-# test_npm_deidentify.spec.ts resolves paths from its own __filename via
-# import.meta.url, so tests/ must sit two levels above js/openmedkit-web/
-# (i.e. at /app/tests/) to match the repo layout the script expects.
-FROM builder AS test
-
-COPY tests/web /app/tests/web
-
-RUN npm run typecheck && npm run test:node
+RUN npm run build && npm run typecheck
 
 # ── release ───────────────────────────────────────────────────────────────────
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS release
@@ -57,9 +45,9 @@ LABEL org.opencontainers.image.title="openmedkit-web" \
 
 WORKDIR /app
 
-COPY --from=builder /app/js/openmedkit-web/dist ./dist
-COPY --from=builder /app/js/openmedkit-web/package.json ./
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/package.json ./
 
 # Source included so declaration maps (.d.ts.map) resolve to original TS files
 # when this image is used as a base in downstream Node.js applications.
-COPY js/openmedkit-web/src ./src
+COPY src ./src
